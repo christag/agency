@@ -897,6 +897,64 @@ def collect_task_runs(g: dict, prompt_stem: str, limit: int = 20) -> list[dict]:
     return runs[:limit]
 
 
+def build_schedule_cards(g: dict, dispatch_cfg: dict) -> list[dict]:
+    """Invert agent-centric dispatch config into prompt-centric task cards.
+
+    Iterates dispatch_cfg["agents"], groups rules by prompt filename,
+    and builds a card per unique prompt with assignments, metadata, and last run.
+    Skips system prompts (starting with '_') and non-list agent values.
+    Sorts: errors first, then alphabetical by slug.
+    """
+    agents_cfg = dispatch_cfg.get("agents", {})
+    if not agents_cfg:
+        return []
+
+    # Group assignments by prompt filename
+    prompt_assignments: dict[str, list[dict]] = {}
+    for agent_name, rules in agents_cfg.items():
+        if not isinstance(rules, list):
+            continue
+        for rule in rules:
+            filename = rule.get("prompt", "")
+            if not filename or filename.startswith("_"):
+                continue
+            assignment = {
+                "agent": agent_name,
+                "at": rule.get("at"),
+                "every": rule.get("every"),
+                "condition": rule.get("condition"),
+            }
+            prompt_assignments.setdefault(filename, []).append(assignment)
+
+    # Build a card for each unique prompt
+    prompts_dir = g["shared"] / "prompts"
+    cards: list[dict] = []
+    for filename, assignments in prompt_assignments.items():
+        slug = filename.removesuffix(".md")
+        meta, _body = parse_prompt_frontmatter(prompts_dir / filename)
+        runs = collect_task_runs(g, slug, limit=1)
+        cards.append({
+            "slug": slug,
+            "name": humanize_prompt_name(filename),
+            "filename": filename,
+            "description": meta.get("description", ""),
+            "expected_output": meta.get("expected_output", ""),
+            "assignments": assignments,
+            "last_run": runs[0] if runs else None,
+        })
+
+    # Sort: errors first, then alphabetical by slug
+    def sort_key(card):
+        has_error = (
+            card["last_run"] is not None
+            and card["last_run"].get("status") == "error"
+        )
+        return (0 if has_error else 1, card["slug"])
+
+    cards.sort(key=sort_key)
+    return cards
+
+
 def infer_agent_from_prompt(filename: str, agents: list[str]) -> str | None:
     """Infer agent name from prompt filename by matching agent name prefix.
 

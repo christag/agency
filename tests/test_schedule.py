@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from agency.app import (
+    build_schedule_cards,
     collect_task_runs,
     humanize_prompt_name,
     parse_prompt_frontmatter,
@@ -148,3 +149,95 @@ class TestCollectTaskRuns:
         runs = collect_task_runs(g, "routine")
         assert len(runs) == 1
         assert runs[0]["agent"] == "business-ops"
+
+
+class TestBuildScheduleCards:
+    """Tests for build_schedule_cards()."""
+
+    def _make_group(self, tmp_path):
+        shared = tmp_path / "shared"
+        prompts = shared / "prompts"
+        logs = shared / "logs"
+        prompts.mkdir(parents=True)
+        logs.mkdir(parents=True)
+        return {"path": tmp_path, "shared": shared}
+
+    def test_builds_cards_from_dispatch_config(self, tmp_path):
+        """Two agents sharing a prompt → one card with two assignments."""
+        g = self._make_group(tmp_path)
+        (g["shared"] / "prompts" / "routine.md").write_text(
+            "---\ndescription: Daily routine\nexpected_output: status report\n---\nDo stuff.\n"
+        )
+        dispatch_cfg = {
+            "agents": {
+                "product": [
+                    {"prompt": "routine.md", "at": "07:30"},
+                ],
+                "qa": [
+                    {"prompt": "routine.md", "every": "6h"},
+                ],
+            }
+        }
+        cards = build_schedule_cards(g, dispatch_cfg)
+        assert len(cards) == 1
+        card = cards[0]
+        assert card["slug"] == "routine"
+        assert card["name"] == "Routine"
+        assert card["filename"] == "routine.md"
+        assert card["description"] == "Daily routine"
+        assert card["expected_output"] == "status report"
+        assert len(card["assignments"]) == 2
+        agents = {a["agent"] for a in card["assignments"]}
+        assert agents == {"product", "qa"}
+        # Check individual assignment fields
+        product_assign = next(a for a in card["assignments"] if a["agent"] == "product")
+        assert product_assign["at"] == "07:30"
+        assert product_assign["every"] is None
+        assert product_assign["condition"] is None
+        qa_assign = next(a for a in card["assignments"] if a["agent"] == "qa")
+        assert qa_assign["at"] is None
+        assert qa_assign["every"] == "6h"
+
+    def test_multiple_prompts_become_multiple_cards(self, tmp_path):
+        """One agent with two prompts → two cards."""
+        g = self._make_group(tmp_path)
+        (g["shared"] / "prompts" / "routine.md").write_text("---\ndescription: Routine\n---\nBody.\n")
+        (g["shared"] / "prompts" / "cleanup.md").write_text("---\ndescription: Cleanup\n---\nBody.\n")
+        dispatch_cfg = {
+            "agents": {
+                "product": [
+                    {"prompt": "routine.md", "at": "07:30"},
+                    {"prompt": "cleanup.md", "at": "23:00"},
+                ],
+            }
+        }
+        cards = build_schedule_cards(g, dispatch_cfg)
+        assert len(cards) == 2
+        slugs = [c["slug"] for c in cards]
+        assert "cleanup" in slugs
+        assert "routine" in slugs
+
+    def test_excludes_system_prompts(self, tmp_path):
+        """Prompts starting with _ are excluded."""
+        g = self._make_group(tmp_path)
+        (g["shared"] / "prompts" / "_system.md").write_text("---\ndescription: System\n---\nBody.\n")
+        (g["shared"] / "prompts" / "routine.md").write_text("---\ndescription: Routine\n---\nBody.\n")
+        dispatch_cfg = {
+            "agents": {
+                "product": [
+                    {"prompt": "_system.md", "at": "06:00"},
+                    {"prompt": "routine.md", "at": "07:30"},
+                ],
+            }
+        }
+        cards = build_schedule_cards(g, dispatch_cfg)
+        assert len(cards) == 1
+        assert cards[0]["slug"] == "routine"
+
+    def test_empty_dispatch_returns_empty(self, tmp_path):
+        """Empty config → empty list."""
+        g = self._make_group(tmp_path)
+        cards = build_schedule_cards(g, {})
+        assert cards == []
+        cards = build_schedule_cards(g, {"agents": {}})
+        assert cards == []
