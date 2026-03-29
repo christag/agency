@@ -3324,6 +3324,42 @@ async def schedule_run_now(request: Request, group: str, slug: str, background_t
     return RedirectResponse(f"/{group}/schedule/{slug}?triggered={agent_name}", status_code=303)
 
 
+@app.post("/{group}/schedule/{slug}/save", response_class=HTMLResponse)
+async def schedule_save_meta(request: Request, group: str, slug: str):
+    """Save task description and expected_output to prompt frontmatter."""
+    g = get_group(group)
+    prompt_file = f"{slug}.md"
+    prompt_path = g["shared"] / "prompts" / prompt_file
+    if not prompt_path.exists():
+        raise HTTPException(404, "Prompt not found")
+
+    validate_file_access(prompt_path, g["path"], allowed_roots=get_allowed_roots(g))
+
+    form = await request.form()
+    new_description = form.get("description", "").strip()
+    new_expected = form.get("expected_output", "").strip()
+
+    meta, body = parse_prompt_frontmatter(prompt_path)
+    if new_description:
+        meta["description"] = new_description
+    elif "description" in meta:
+        del meta["description"]
+    if new_expected:
+        meta["expected_output"] = new_expected
+    elif "expected_output" in meta:
+        del meta["expected_output"]
+
+    # Rebuild file
+    if meta:
+        front = yaml.dump(meta, default_flow_style=False).strip()
+        content = f"---\n{front}\n---\n\n{body}\n"
+    else:
+        content = f"{body}\n"
+
+    prompt_path.write_text(content)
+    return RedirectResponse(f"/{group}/schedule/{slug}", status_code=303)
+
+
 @app.get("/{group}/memory", response_class=HTMLResponse)
 async def memory_list(request: Request, group: str):
     """Browse and edit agent memory files."""
