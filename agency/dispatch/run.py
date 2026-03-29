@@ -5,6 +5,7 @@ import logging
 import os
 import re
 import sys
+import tempfile
 import time
 from datetime import datetime
 from pathlib import Path
@@ -15,6 +16,15 @@ from agency.integrations import get_integration, REGISTRY
 from agency.config import normalize_agents, agent_names, get_agent_dir
 
 log = logging.getLogger("agency.dispatch")
+
+
+def strip_prompt_frontmatter(text: str) -> str:
+    """Remove YAML frontmatter from prompt text, returning body only."""
+    if text.startswith("---"):
+        parts = text.split("---", 2)
+        if len(parts) >= 3:
+            return parts[2].strip()
+    return text
 
 
 def check_at_rule(target_time: str, now_epoch: float | None = None, interval: int = 15) -> bool:
@@ -191,7 +201,19 @@ def _run_agent(group_path: Path, agent_name: str, prompt_filename: str,
     log.info("  RUNNING: %s with %s (timeout %ds, integration %s)",
              agent_name, prompt_filename, timeout, integration_name)
 
-    result = integration.run(agent_dir, prompt_path, timeout)
+    # Strip frontmatter from prompt before passing to agent
+    raw_prompt = prompt_path.read_text()
+    clean_prompt = strip_prompt_frontmatter(raw_prompt)
+    if clean_prompt != raw_prompt:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".md", delete=False, dir=log_dir) as tmp:
+            tmp.write(clean_prompt)
+            clean_path = Path(tmp.name)
+        try:
+            result = integration.run(agent_dir, clean_path, timeout)
+        finally:
+            clean_path.unlink(missing_ok=True)
+    else:
+        result = integration.run(agent_dir, prompt_path, timeout)
     out_file.write_text(result.stdout)
     err_file.write_text(result.stderr)
 

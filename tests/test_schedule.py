@@ -299,3 +299,21 @@ class TestRunNowValidation:
         client = self._make_app(tmp_path)
         resp = client.post("/test/schedule/morning/run", data={"agent": "not-assigned"})
         assert resp.status_code == 400
+
+
+class TestStripPromptFrontmatter:
+    """Tests for strip_prompt_frontmatter()."""
+
+    def test_strips_frontmatter(self):
+        from agency.dispatch.run import strip_prompt_frontmatter
+        text = "---\ndescription: test\n---\n# The prompt\nDo stuff."
+        assert strip_prompt_frontmatter(text) == "# The prompt\nDo stuff."
+
+    def test_no_frontmatter_unchanged(self):
+        from agency.dispatch.run import strip_prompt_frontmatter
+        text = "# The prompt\nDo stuff."
+        assert strip_prompt_frontmatter(text) == "# The prompt\nDo stuff."
+
+    def test_empty_string(self):
+        from agency.dispatch.run import strip_prompt_frontmatter
+        assert strip_prompt_frontmatter("") == ""
