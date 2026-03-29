@@ -3149,6 +3149,22 @@ async def prompts_dispatch_save(request: Request, group: str):
     return RedirectResponse(f"/{group}/prompts", status_code=303)
 
 
+@app.get("/{group}/schedule", response_class=HTMLResponse)
+async def schedule_list(request: Request, group: str):
+    """Task-oriented view of dispatch schedule."""
+    g = get_group(group)
+    group_cfg = GROUPS.get(g["key"], {})
+    dispatch_cfg = group_cfg.get("dispatch", {})
+    cards = build_schedule_cards(g, dispatch_cfg)
+    return templates.TemplateResponse("schedule.html", {
+        "request": request,
+        **group_context(g),
+        "active": "schedule",
+        "cards": cards,
+        "dispatch_enabled": dispatch_cfg.get("enabled", False),
+    })
+
+
 @app.get("/{group}/memory", response_class=HTMLResponse)
 async def memory_list(request: Request, group: str):
     """Browse and edit agent memory files."""

@@ -1,0 +1,76 @@
+{% extends "base.html" %}
+{% set active = "schedule" %}
+
+{% block title %}Schedule - {{ group_name }}{% endblock %}
+
+{% block content %}
+<div class="flex items-baseline justify-between mb-6">
+  <div class="flex items-center gap-3">
+    <h1 class="text-2xl font-bold text-gray-900 dark:text-gray-100">Schedule</h1>
+    {% if not dispatch_enabled %}
+    <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-400 border border-amber-200 dark:border-amber-800">Dispatch disabled</span>
+    {% endif %}
+  </div>
+  <span class="text-sm text-gray-500 dark:text-gray-400">{{ cards|length }} tasks</span>
+</div>
+
+{% if cards %}
+<div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+  {% for card in cards %}
+  <a href="/{{ group }}/schedule/{{ card.slug }}" class="block bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 p-4 hover:border-indigo-300 dark:hover:border-indigo-600 transition-colors">
+    {# Header row: task name + last run status #}
+    <div class="flex items-start justify-between gap-2 mb-2">
+      <div class="font-semibold text-gray-900 dark:text-gray-100 leading-snug">{{ card.name }}</div>
+      {% if card.last_run %}
+      <div class="flex-shrink-0 text-right">
+        <div class="flex items-center gap-1.5 text-xs text-gray-500 dark:text-gray-400">
+          {% if card.last_run.status == 'error' %}
+          <span class="w-2 h-2 rounded-full bg-rose-500 flex-shrink-0"></span>
+          {% else %}
+          <span class="w-2 h-2 rounded-full bg-emerald-500 flex-shrink-0"></span>
+          {% endif %}
+          <span>{{ card.last_run.date }}</span>
+          <span>{{ card.last_run.time }}</span>
+        </div>
+        <div class="text-xs text-gray-400 dark:text-gray-500 mt-0.5">{{ card.last_run.agent }}</div>
+      </div>
+      {% else %}
+      <div class="flex-shrink-0 text-xs text-gray-400 dark:text-gray-500">No runs yet</div>
+      {% endif %}
+    </div>
+
+    {# Description #}
+    {% if card.description %}
+    <div class="text-sm text-gray-500 dark:text-gray-400 mb-3 line-clamp-2">{{ card.description }}</div>
+    {% endif %}
+
+    {# Agent assignment pills #}
+    <div class="flex flex-wrap gap-1.5">
+      {% for a in card.assignments %}
+      {% if a.condition %}
+      <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-400">
+        {{ a.agent }}
+        <span class="text-amber-500 dark:text-amber-500">{{ a.condition }}</span>
+      </span>
+      {% else %}
+      <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-indigo-50 dark:bg-indigo-950/40 text-indigo-700 dark:text-indigo-400">
+        {{ a.agent }}
+        {% if a.at %}
+        <span class="text-indigo-400 dark:text-indigo-500">@ {{ a.at }}</span>
+        {% elif a.every %}
+        <span class="text-indigo-400 dark:text-indigo-500">every {{ a.every }}</span>
+        {% endif %}
+      </span>
+      {% endif %}
+      {% endfor %}
+    </div>
+  </a>
+  {% endfor %}
+</div>
+{% else %}
+<div class="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 p-8 text-center">
+  <div class="text-gray-500 dark:text-gray-400 mb-2">No dispatch rules configured</div>
+  <a href="/{{ group }}/prompts" class="text-sm text-indigo-600 dark:text-indigo-400 hover:text-indigo-800 dark:hover:text-indigo-300">Configure dispatch on the prompts page &rarr;</a>
+</div>
+{% endif %}
+{% endblock %}
