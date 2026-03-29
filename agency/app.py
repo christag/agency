@@ -2958,6 +2958,25 @@ async def document_view(request: Request, group: str, path: str):
         from markupsafe import escape
         content_html = f"<pre class='whitespace-pre-wrap text-sm'>{escape(raw)}</pre>"
 
+    # Check if this file is a scheduled prompt
+    schedule_slug = ""
+    prompts_dir = g["shared"] / "prompts"
+    try:
+        if fpath.parent.resolve() == prompts_dir.resolve() and fpath.suffix == ".md" and not fpath.name.startswith("_"):
+            group_cfg = GROUPS.get(g["key"], {})
+            dispatch_cfg = group_cfg.get("dispatch", {})
+            stem = fpath.name.removesuffix(".md")
+            for agent_rules in dispatch_cfg.get("agents", {}).values():
+                if isinstance(agent_rules, list):
+                    for rule in agent_rules:
+                        if rule.get("prompt") == fpath.name:
+                            schedule_slug = stem
+                            break
+                if schedule_slug:
+                    break
+    except (ValueError, OSError):
+        pass
+
     return templates.TemplateResponse("document_view.html", {
         "request": request,
         **group_context(g),
@@ -2973,6 +2992,7 @@ async def document_view(request: Request, group: str, path: str):
         "is_image": is_image,
         "is_svg": is_svg,
         "image_url": f"/{group}/documents/file?path={path}" if is_image else "",
+        "schedule_slug": schedule_slug,
     })
 
 
