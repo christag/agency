@@ -3,6 +3,7 @@
 from pathlib import Path
 
 import pytest
+from starlette.testclient import TestClient
 
 from agency.app import (
     build_schedule_cards,
@@ -241,3 +242,60 @@ class TestBuildScheduleCards:
         assert cards == []
         cards = build_schedule_cards(g, {"agents": {}})
         assert cards == []
+
+
+class TestRunNowValidation:
+    """Validation tests for POST /{group}/schedule/{slug}/run."""
+
+    def _make_app(self, tmp_path):
+        from agency.app import app, CONFIG, GROUPS
+
+        # Create shared structure
+        (tmp_path / "shared" / "prompts").mkdir(parents=True, exist_ok=True)
+        (tmp_path / "shared" / "observations").mkdir(parents=True, exist_ok=True)
+        (tmp_path / "shared" / "proposals").mkdir(parents=True, exist_ok=True)
+        (tmp_path / "shared" / "logs").mkdir(parents=True, exist_ok=True)
+        (tmp_path / "alpha").mkdir()
+
+        # Write a prompt file
+        (tmp_path / "shared" / "prompts" / "morning.md").write_text(
+            "---\ndescription: Morning routine\n---\n\nDo the morning thing.\n"
+        )
+
+        group_cfg = {
+            "name": "Test Group",
+            "path": str(tmp_path),
+            "key": "test",
+            "shared": tmp_path / "shared",
+            "agents": ["alpha"],
+            "agents_full": [{"name": "alpha", "integration": "claude-code"}],
+            "_agents_normalized": [{"name": "alpha", "integration": "claude-code"}],
+            "default_integration": "claude-code",
+            "dispatch": {
+                "enabled": True,
+                "timeout": 1800,
+                "agents": {
+                    "alpha": [
+                        {"prompt": "morning.md", "at": "09:00"},
+                    ],
+                },
+            },
+        }
+
+        CONFIG.clear()
+        CONFIG.update({"agency": {"title": "Test", "default_group": "test"}, "groups": {"test": group_cfg}})
+        GROUPS.clear()
+        GROUPS["test"] = group_cfg
+        return TestClient(app)
+
+    def test_rejects_empty_agent(self, tmp_path):
+        """POST with no agent field should return 400."""
+        client = self._make_app(tmp_path)
+        resp = client.post("/test/schedule/morning/run", data={})
+        assert resp.status_code == 400
+
+    def test_rejects_unassigned_agent(self, tmp_path):
+        """POST with agent not in dispatch config should return 400."""
+        client = self._make_app(tmp_path)
+        resp = client.post("/test/schedule/morning/run", data={"agent": "not-assigned"})
+        assert resp.status_code == 400

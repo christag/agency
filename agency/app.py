@@ -3216,6 +3216,68 @@ async def schedule_detail(request: Request, group: str, slug: str):
     })
 
 
+@app.post("/{group}/schedule/{slug}/run", response_class=HTMLResponse)
+async def schedule_run_now(request: Request, group: str, slug: str, background_tasks: BackgroundTasks):
+    """Trigger an immediate run of a scheduled task for a specific agent."""
+    from agency.dispatch.run import _run_agent
+
+    g = get_group(group)
+    group_cfg = GROUPS.get(g["key"], {})
+    dispatch_cfg = group_cfg.get("dispatch", {})
+
+    # Parse and validate agent field
+    form = await request.form()
+    agent_name = form.get("agent", "").strip()
+    if not agent_name:
+        raise HTTPException(400, "Missing agent field")
+
+    # Validate agent is assigned to this prompt in dispatch config
+    prompt_file = f"{slug}.md"
+    dispatch_agents = dispatch_cfg.get("agents", {})
+    agent_rules = dispatch_agents.get(agent_name)
+    if agent_rules is None:
+        raise HTTPException(400, f"Agent '{agent_name}' has no dispatch rules")
+
+    # Handle both list of rules and dict (with timeout key)
+    rules_list = agent_rules if isinstance(agent_rules, list) else agent_rules.get("rules", [])
+    assigned = any(r.get("prompt") == prompt_file for r in rules_list if isinstance(r, dict))
+    if not assigned:
+        raise HTTPException(400, f"Agent '{agent_name}' is not assigned to prompt '{prompt_file}'")
+
+    # Verify prompt file exists
+    prompt_path = g["shared"] / "prompts" / prompt_file
+    if not prompt_path.exists():
+        raise HTTPException(404, "Prompt not found")
+
+    # Resolve agent config from normalized agents list
+    agents_normalized = g.get("agents_full", g.get("_agents_normalized", []))
+    agents_by_name = {a["name"]: a for a in agents_normalized}
+    agent_config = agents_by_name.get(agent_name, {"name": agent_name, "integration": g.get("default_integration", "claude-code")})
+
+    # Resolve timeout: per-agent → group dispatch → default 1800
+    group_timeout = dispatch_cfg.get("timeout", 1800)
+    if isinstance(agent_rules, dict):
+        timeout = agent_rules.get("timeout", group_timeout)
+    else:
+        timeout = group_timeout
+
+    # Create log directory for today
+    log_dir = g["shared"] / "logs" / datetime.now().strftime("%Y-%m-%d")
+    log_dir.mkdir(parents=True, exist_ok=True)
+
+    # Resolve agent directory
+    agent_dir = get_agent_dir(g, agent_name)
+
+    # Dispatch as background task
+    background_tasks.add_task(
+        _run_agent,
+        Path(g["path"]), agent_name, prompt_file, timeout, log_dir,
+        agent_config, agent_dir=agent_dir,
+    )
+
+    return RedirectResponse(f"/{group}/schedule/{slug}?triggered={agent_name}", status_code=303)
+
+
 @app.get("/{group}/memory", response_class=HTMLResponse)
 async def memory_list(request: Request, group: str):
     """Browse and edit agent memory files."""
