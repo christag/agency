@@ -3165,6 +3165,57 @@ async def schedule_list(request: Request, group: str):
     })
 
 
+@app.get("/{group}/schedule/{slug}", response_class=HTMLResponse)
+async def schedule_detail(request: Request, group: str, slug: str):
+    """Task detail view — schedule, prompt content, run history."""
+    g = get_group(group)
+    group_cfg = GROUPS.get(g["key"], {})
+    dispatch_cfg = group_cfg.get("dispatch", {})
+
+    prompt_file = f"{slug}.md"
+    prompt_path = g["shared"] / "prompts" / prompt_file
+    if not prompt_path.exists():
+        raise HTTPException(404, "Prompt not found")
+
+    meta, body = parse_prompt_frontmatter(prompt_path)
+    content_html = render_md(body)
+
+    # Build assignments for this prompt from dispatch config
+    assignments = []
+    for agent_name, rules in dispatch_cfg.get("agents", {}).items():
+        if not isinstance(rules, list):
+            continue
+        for rule in rules:
+            if rule.get("prompt") == prompt_file:
+                assignments.append({
+                    "agent": agent_name,
+                    "at": rule.get("at"),
+                    "every": rule.get("every"),
+                    "condition": rule.get("condition"),
+                })
+
+    runs = collect_task_runs(g, slug, limit=20)
+    triggered = request.query_params.get("triggered", "")
+
+    return templates.TemplateResponse("schedule_detail.html", {
+        "request": request,
+        **group_context(g),
+        "active": "schedule",
+        "slug": slug,
+        "name": humanize_prompt_name(prompt_file),
+        "filename": prompt_file,
+        "description": meta.get("description", ""),
+        "expected_output": meta.get("expected_output", ""),
+        "body_raw": body,
+        "content_html": content_html,
+        "filepath": str(prompt_path),
+        "assignments": assignments,
+        "runs": runs,
+        "dispatch_enabled": dispatch_cfg.get("enabled", False),
+        "triggered": triggered,
+    })
+
+
 @app.get("/{group}/memory", response_class=HTMLResponse)
 async def memory_list(request: Request, group: str):
     """Browse and edit agent memory files."""
