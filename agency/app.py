@@ -2394,6 +2394,31 @@ async def agent_profile(request: Request, group: str, agent: str):
     agent_schedule = dispatch_cfg.get("agents", {}).get(agent, [])
     dispatch_enabled = dispatch_cfg.get("enabled", False)
 
+    # Build enriched task cards for this agent's schedule
+    agent_tasks = []
+    for rule in agent_schedule:
+        prompt_file = rule.get("prompt", "")
+        if not prompt_file:
+            continue
+        slug = prompt_file.removesuffix(".md")
+        prompt_path = g["shared"] / "prompts" / prompt_file
+        meta, _ = parse_prompt_frontmatter(prompt_path)
+        # Get last run by this specific agent for this prompt
+        all_runs = collect_task_runs(g, slug, limit=5)
+        agent_last_run = None
+        for r in all_runs:
+            if r["agent"] == agent:
+                agent_last_run = r
+                break
+        agent_tasks.append({
+            "slug": slug,
+            "name": humanize_prompt_name(prompt_file),
+            "at": rule.get("at"),
+            "every": rule.get("every"),
+            "condition": rule.get("condition"),
+            "last_run": agent_last_run,
+        })
+
     return templates.TemplateResponse("agent_profile.html", {
         "request": request,
         **group_context(g),
@@ -2406,6 +2431,7 @@ async def agent_profile(request: Request, group: str, agent: str):
         "has_memory": has_memory,
         "memory_path": memory_path,
         "agent_schedule": agent_schedule,
+        "agent_tasks": agent_tasks,
         "dispatch_enabled": dispatch_enabled,
         "agent_integration": agent_int.name,
     })
