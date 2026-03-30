@@ -45,7 +45,7 @@
 │   │   ├── ide.py             # Generic IDE (VS Code, Windsurf, JetBrains)
 │   │   ├── chat.py            # Chat platforms (Slack, Mattermost, Discord)
 │   │   └── custom.py          # Custom config file
-│   └── templates/             # 27 Jinja2 templates
+│   └── templates/             # 29 Jinja2 templates
 │       ├── base.html          # Layout: sidebar + main content
 │       ├── home.html          # Mission control dashboard (fleet, pipeline, attention queue, activity)
 │       ├── agents.html        # Agent list with health dots + integration badges
@@ -62,6 +62,8 @@
 │       ├── log_view.html      # Single log file
 │       ├── prompts.html       # Dispatch prompts with agent assignments + schedule editing
 │       ├── prompt_detail.html # View/edit prompt content
+│       ├── schedule.html      # Scheduled task list (card grid)
+│       ├── schedule_detail.html # Task detail: schedule, prompt, history, run now
 │       ├── memory.html        # Agent memory list
 │       ├── memory_view.html   # View/edit memory
 │       ├── admin.html         # Admin: redirects to settings
@@ -299,6 +301,10 @@ All org-scoped routes use `/{group}/` prefix. Admin routes are at `/admin/`.
 | GET | `/{group}/prompts/{slug}` | View/edit prompt content |
 | POST | `/{group}/prompts/{slug}/save` | Save prompt content edits |
 | POST | `/{group}/prompts/dispatch` | Save dispatch assignments from prompts page |
+| GET | `/{group}/schedule` | Scheduled task list — card grid of dispatch prompts |
+| GET | `/{group}/schedule/{slug}` | Task detail — schedule, prompt content, run history, run now |
+| POST | `/{group}/schedule/{slug}/run` | Manually trigger agent run for a task |
+| POST | `/{group}/schedule/{slug}/save` | Save task description/expected_output to frontmatter |
 | GET | `/{group}/memory` | Agent memory file list |
 | GET | `/{group}/memory/view?path=` | View/edit memory file |
 | POST | `/{group}/memory/save` | Save memory edits |

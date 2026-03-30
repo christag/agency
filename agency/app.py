@@ -354,7 +354,7 @@ def group_context(g: dict, observations: list[dict] | None = None, proposals: li
     open_observation_count = sum(1 for c in observations if c.get("status") == "open")
     actionable_proposal_count = sum(1 for c in proposals if c.get("status") in ("proposed", "investigating"))
     floated_observation_count = sum(1 for c in observations if c.get("float") and c.get("status") == "open")
-    needs_action_count = actionable_proposal_count + floated_observation_count
+    inbox_count = actionable_proposal_count + floated_observation_count
     decisions = list_decisions(g)
     running_decisions = sum(1 for d in decisions if d.get("execution_status") == "running")
     return {
@@ -366,7 +366,7 @@ def group_context(g: dict, observations: list[dict] | None = None, proposals: li
         "workspaces": group_cfg.get("workspaces", []),
         "workspaces_available": bool(group_cfg.get("workspaces")),
         "nav_open_observations": open_observation_count,
-        "nav_actionable": needs_action_count,
+        "nav_inbox": inbox_count,
         "nav_actionable_proposals": actionable_proposal_count,
         "nav_agent_count": len(g["agents"]),
         "nav_running_decisions": running_decisions,
@@ -648,20 +648,23 @@ def build_pipeline_stats(observations: list[dict], proposals: list[dict],
         return buckets
 
     obs_total = len(observations)
+    obs_active = sum(1 for o in observations if o.get("status") in ("open", "connected"))
     prop_total = len(proposals)
+    prop_active = sum(1 for p in proposals if p.get("status") in ("investigating", "proposed"))
     dec_total = len(decisions)
+    dec_pending = sum(1 for d in decisions if d.get("execution_status") in ("pending", "running"))
 
-    if obs_total > 8 and prop_total <= 1:
+    if obs_active > 8 and prop_active <= 1:
         flow = "bottleneck"
-    elif obs_total > 5 * max(prop_total, 1) and obs_total > 5:
+    elif obs_active > 5 * max(prop_active, 1) and obs_active > 5:
         flow = "bottleneck"
     else:
         flow = "healthy"
 
     return {
-        "observations": {"total": obs_total, "sparkline": sparkline_buckets(observations)},
-        "proposals": {"total": prop_total, "sparkline": sparkline_buckets(proposals)},
-        "decisions": {"total": dec_total, "sparkline": sparkline_buckets(decisions)},
+        "observations": {"total": obs_total, "active": obs_active, "sparkline": sparkline_buckets(observations)},
+        "proposals": {"total": prop_total, "active": prop_active, "sparkline": sparkline_buckets(proposals)},
+        "decisions": {"total": dec_total, "active": dec_pending, "sparkline": sparkline_buckets(decisions)},
         "flow_status": flow,
     }
 
@@ -685,70 +688,114 @@ def build_activity_feed(observations: list[dict], proposals: list[dict],
         # Strip tzinfo so naive and aware datetimes can be compared
         return dt.replace(tzinfo=None) if dt.tzinfo is not None else dt
 
+    cutoff = datetime.now() - timedelta(hours=24)
+
     for o in observations:
+        ts = _parse_dt(o.get("date", ""))
         events.append({
             "type": "observation",
             "slug": o.get("_slug", ""),
             "agent": o.get("agent", ""),
-            "timestamp": _parse_dt(o.get("date", "")),
+            "timestamp": ts,
             "status": o.get("status", ""),
+            "recent": ts > cutoff,
         })
 
     for p in proposals:
+        ts = _parse_dt(p.get("date", ""))
         events.append({
             "type": "proposal",
             "slug": p.get("_slug", ""),
             "agent": p.get("origin_agent", ""),
-            "timestamp": _parse_dt(p.get("date", "")),
+            "timestamp": ts,
             "status": p.get("status", ""),
+            "recent": ts > cutoff,
         })
 
     events.sort(key=lambda e: e["timestamp"], reverse=True)
     return events[:limit]
 
 
-def collect_documents(g: dict) -> list[dict]:
-    """Collect standalone documents from agent directories."""
-    docs = []
-    skip_dirs = {"observations", "proposals", "decisions", "prompts", "logs", "archive",
-                 "ad-skills", "social-posts", "templates", "dashboard"}
+def collect_documents(g: dict, subpath: str = "") -> list[dict]:
+    """Collect documents and folders from agent directories.
 
+    When subpath is empty, returns top-level files and folders per agent.
+    When subpath is e.g. "product/items", returns contents of that subfolder.
+    """
+    SKIP_DIRS = {"observations", "proposals", "decisions", "prompts", "logs", "archive",
+                 "ad-skills", "social-posts", "templates", "dashboard"}
+    FILE_EXTS = {".md", ".csv", ".html", ".txt", ".py", ".svg", ".json", ".yaml", ".yml", ".toml",
+                  ".xml", ".sql", ".js", ".ts", ".sh", ".css",
+                  ".png", ".jpg", ".jpeg", ".gif", ".webp"}
     identity_files = {i.identity_filename() for i in REGISTRY.values()}
 
-    for agent in g["agents"]:
-        agent_dir = get_agent_dir(g, agent)
-        if not agent_dir.exists():
-            continue
-        for f in sorted(agent_dir.rglob("*")):
-            if f.is_dir():
+    docs = []
+
+    # Parse subpath into agent + relative folder path
+    sub_agent = ""
+    sub_rel = ""
+    if subpath:
+        parts = subpath.strip("/").split("/", 1)
+        sub_agent = parts[0]
+        sub_rel = parts[1] if len(parts) > 1 else ""
+
+    def _collect_agent(agent_name: str, base_dir: Path):
+        """List immediate children (files + folders) of the target directory."""
+        if not base_dir.exists():
+            return
+        target = base_dir / sub_rel if sub_rel else base_dir
+        if not target.exists() or not target.is_dir():
+            return
+        for entry in sorted(target.iterdir()):
+            if entry.name.startswith("."):
                 continue
-            if f.name.startswith(".") or f.name in identity_files:
+            rel = entry.relative_to(base_dir)
+            # Skip well-known pipeline directories
+            if any(part in SKIP_DIRS for part in rel.parts):
                 continue
-            rel = f.relative_to(agent_dir)
-            if any(part in skip_dirs for part in rel.parts[:-1]):
-                continue
-            suffix = f.suffix.lower()
-            if suffix in (".md", ".csv", ".html", ".txt", ".py"):
+            if entry.is_dir():
+                # Check if folder has any displayable files
+                has_files = any(
+                    f.suffix.lower() in FILE_EXTS
+                    for f in entry.rglob("*") if f.is_file() and not f.name.startswith(".")
+                )
+                if has_files:
+                    docs.append({
+                        "agent": agent_name,
+                        "path": str(entry),
+                        "rel_path": str(rel),
+                        "name": entry.name,
+                        "suffix": "",
+                        "is_dir": True,
+                    })
+            elif entry.name not in identity_files and entry.suffix.lower() in FILE_EXTS:
                 docs.append({
-                    "agent": agent,
-                    "path": str(f),
+                    "agent": agent_name,
+                    "path": str(entry),
                     "rel_path": str(rel),
-                    "name": f.name,
-                    "suffix": suffix,
+                    "name": entry.name,
+                    "suffix": entry.suffix.lower(),
+                    "is_dir": False,
                 })
 
-    # Also add shared standalone files
-    shared = g["shared"]
-    if shared.exists():
-        for f in sorted(shared.iterdir()):
-            if f.is_file() and f.suffix in (".md", ".html", ".csv") and f.name != "memory.md":
-                docs.append({
-                    "agent": "shared",
-                    "path": str(f),
-                    "rel_path": f.name,
-                    "name": f.name,
-                    "suffix": f.suffix.lower(),
-                })
+    if sub_agent:
+        # Browsing within a specific agent/shared
+        if sub_agent == "shared":
+            shared = g["shared"]
+            if shared.exists():
+                _collect_agent("shared", shared)
+        else:
+            agent_dir = get_agent_dir(g, sub_agent)
+            _collect_agent(sub_agent, agent_dir)
+    else:
+        # Top-level: show all agents
+        for agent in g["agents"]:
+            agent_dir = get_agent_dir(g, agent)
+            _collect_agent(agent, agent_dir)
+        # Shared files
+        shared = g["shared"]
+        if shared.exists():
+            _collect_agent("shared", shared)
 
     return docs
 
@@ -775,6 +822,137 @@ def collect_logs(g: dict) -> dict[str, list[dict]]:
         if entries:
             result[date_dir.name] = entries
     return result
+
+
+def parse_prompt_frontmatter(path: Path) -> tuple[dict, str]:
+    """Read a prompt file, extract YAML frontmatter. Returns (meta, body).
+
+    Returns ({}, "") if the file doesn't exist.
+    """
+    if not path.exists():
+        return {}, ""
+    text = path.read_text()
+    return parse_frontmatter(text)
+
+
+def humanize_prompt_name(filename: str) -> str:
+    """Convert a prompt filename to a human-readable title.
+
+    E.g., 'product-routine.md' → 'Product Routine'.
+    Strips .md suffix, replaces - and _ with spaces, title-cases.
+    """
+    name = filename.removesuffix(".md")
+    name = name.replace("-", " ").replace("_", " ")
+    return name.title()
+
+
+def collect_task_runs(g: dict, prompt_stem: str, limit: int = 20) -> list[dict]:
+    """Scan logs for runs matching a prompt stem. Returns list sorted newest first.
+
+    Log filenames follow the pattern: {agent}-{stem}-{HHMMSS}.out
+    The agent name is everything before '-{stem}-'.
+    Status is 'error' if the matching .err file has size > 0, otherwise 'success'.
+    """
+    logs_dir = g["shared"] / "logs"
+    if not logs_dir.exists():
+        return []
+
+    suffix = f"-{prompt_stem}-"
+    runs: list[dict] = []
+
+    for date_dir in sorted(logs_dir.iterdir(), reverse=True):
+        if not date_dir.is_dir():
+            continue
+        for f in sorted(date_dir.iterdir(), reverse=True):
+            if not f.name.endswith(".out"):
+                continue
+            # Check if filename contains the stem pattern
+            stem_part = f.name.removesuffix(".out")
+            idx = stem_part.find(suffix)
+            if idx == -1:
+                continue
+            agent = stem_part[:idx]
+            time_str = stem_part[idx + len(suffix):]
+            # Parse HHMMSS into HH:MM:SS
+            if len(time_str) == 6 and time_str.isdigit():
+                formatted_time = f"{time_str[:2]}:{time_str[2:4]}:{time_str[4:6]}"
+            else:
+                formatted_time = time_str
+
+            err_path = f.with_suffix(".err")
+            err_size = err_path.stat().st_size if err_path.exists() else 0
+            status = "error" if err_size > 0 else "success"
+
+            runs.append({
+                "date": date_dir.name,
+                "time": formatted_time,
+                "agent": agent,
+                "status": status,
+                "out_size": f.stat().st_size,
+                "out_path": str(f),
+                "err_path": str(err_path),
+            })
+
+    runs.sort(key=lambda r: (r["date"], r["time"]), reverse=True)
+    return runs[:limit]
+
+
+def build_schedule_cards(g: dict, dispatch_cfg: dict) -> list[dict]:
+    """Invert agent-centric dispatch config into prompt-centric task cards.
+
+    Iterates dispatch_cfg["agents"], groups rules by prompt filename,
+    and builds a card per unique prompt with assignments, metadata, and last run.
+    Skips system prompts (starting with '_') and non-list agent values.
+    Sorts: errors first, then alphabetical by slug.
+    """
+    agents_cfg = dispatch_cfg.get("agents", {})
+    if not agents_cfg:
+        return []
+
+    # Group assignments by prompt filename
+    prompt_assignments: dict[str, list[dict]] = {}
+    for agent_name, rules in agents_cfg.items():
+        if not isinstance(rules, list):
+            continue
+        for rule in rules:
+            filename = rule.get("prompt", "")
+            if not filename or filename.startswith("_"):
+                continue
+            assignment = {
+                "agent": agent_name,
+                "at": rule.get("at"),
+                "every": rule.get("every"),
+                "condition": rule.get("condition"),
+            }
+            prompt_assignments.setdefault(filename, []).append(assignment)
+
+    # Build a card for each unique prompt
+    prompts_dir = g["shared"] / "prompts"
+    cards: list[dict] = []
+    for filename, assignments in prompt_assignments.items():
+        slug = filename.removesuffix(".md")
+        meta, _body = parse_prompt_frontmatter(prompts_dir / filename)
+        runs = collect_task_runs(g, slug, limit=1)
+        cards.append({
+            "slug": slug,
+            "name": humanize_prompt_name(filename),
+            "filename": filename,
+            "description": meta.get("description", ""),
+            "expected_output": meta.get("expected_output", ""),
+            "assignments": assignments,
+            "last_run": runs[0] if runs else None,
+        })
+
+    # Sort: errors first, then alphabetical by slug
+    def sort_key(card):
+        has_error = (
+            card["last_run"] is not None
+            and card["last_run"].get("status") == "error"
+        )
+        return (0 if has_error else 1, card["slug"])
+
+    cards.sort(key=sort_key)
+    return cards
 
 
 def infer_agent_from_prompt(filename: str, agents: list[str]) -> str | None:
@@ -2216,6 +2394,31 @@ async def agent_profile(request: Request, group: str, agent: str):
     agent_schedule = dispatch_cfg.get("agents", {}).get(agent, [])
     dispatch_enabled = dispatch_cfg.get("enabled", False)
 
+    # Build enriched task cards for this agent's schedule
+    agent_tasks = []
+    for rule in agent_schedule:
+        prompt_file = rule.get("prompt", "")
+        if not prompt_file:
+            continue
+        slug = prompt_file.removesuffix(".md")
+        prompt_path = g["shared"] / "prompts" / prompt_file
+        meta, _ = parse_prompt_frontmatter(prompt_path)
+        # Get last run by this specific agent for this prompt
+        all_runs = collect_task_runs(g, slug, limit=5)
+        agent_last_run = None
+        for r in all_runs:
+            if r["agent"] == agent:
+                agent_last_run = r
+                break
+        agent_tasks.append({
+            "slug": slug,
+            "name": humanize_prompt_name(prompt_file),
+            "at": rule.get("at"),
+            "every": rule.get("every"),
+            "condition": rule.get("condition"),
+            "last_run": agent_last_run,
+        })
+
     return templates.TemplateResponse("agent_profile.html", {
         "request": request,
         **group_context(g),
@@ -2228,6 +2431,7 @@ async def agent_profile(request: Request, group: str, agent: str):
         "has_memory": has_memory,
         "memory_path": memory_path,
         "agent_schedule": agent_schedule,
+        "agent_tasks": agent_tasks,
         "dispatch_enabled": dispatch_enabled,
         "agent_integration": agent_int.name,
     })
@@ -2683,22 +2887,62 @@ async def decision_retry(request: Request, group: str, slug: str,
 
 
 @app.get("/{group}/documents", response_class=HTMLResponse)
-async def documents_list(request: Request, group: str, agent: str = ""):
-    """Browse documents by agent."""
+async def documents_list(request: Request, group: str, agent: str = "", subpath: str = ""):
+    """Browse documents by agent, with subfolder navigation."""
     g = get_group(group)
-    docs = collect_documents(g)
-    if agent:
+    # If agent filter is set but no subpath, scope to that agent's top-level
+    effective_subpath = subpath
+    if agent and not subpath:
+        effective_subpath = agent
+    docs = collect_documents(g, effective_subpath)
+    if agent and not subpath:
+        # Already scoped by effective_subpath
+        pass
+    elif agent:
         docs = [d for d in docs if d["agent"] == agent]
     by_agent = {}
     for d in docs:
         by_agent.setdefault(d["agent"], []).append(d)
+
+    # Build breadcrumbs from subpath
+    breadcrumbs = []
+    if effective_subpath:
+        parts = effective_subpath.strip("/").split("/")
+        for i, part in enumerate(parts):
+            crumb_path = "/".join(parts[:i + 1])
+            breadcrumbs.append({"name": part, "subpath": crumb_path})
+
     return templates.TemplateResponse("documents.html", {
         "request": request,
         **group_context(g),
         "by_agent": by_agent,
         "filter_agent": agent,
         "agents": g["agents"] + ["shared"],
+        "subpath": effective_subpath,
+        "breadcrumbs": breadcrumbs,
     })
+
+
+IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
+IMAGE_MIMETYPES = {
+    ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+    ".gif": "image/gif", ".webp": "image/webp",
+}
+
+
+@app.get("/{group}/documents/file", response_class=FileResponse)
+async def document_file(group: str, path: str):
+    """Serve a raw document file (images, etc.)."""
+    g = get_group(group)
+    fpath = Path(path)
+    validate_file_access(fpath, g["path"], allowed_roots=get_allowed_roots(g))
+    if not fpath.exists():
+        raise HTTPException(404, "File not found")
+    suffix = fpath.suffix.lower()
+    media_type = IMAGE_MIMETYPES.get(suffix)
+    if not media_type:
+        raise HTTPException(400, "Unsupported file type")
+    return FileResponse(fpath, media_type=media_type)
 
 
 @app.get("/{group}/documents/view", response_class=HTMLResponse)
@@ -2711,15 +2955,24 @@ async def document_view(request: Request, group: str, path: str):
     if not fpath.exists():
         raise HTTPException(404, "File not found")
 
-    raw = fpath.read_text()
     suffix = fpath.suffix.lower()
+    is_image = suffix in IMAGE_EXTS
+    is_svg = suffix == ".svg"
+
+    raw = "" if is_image else fpath.read_text()
 
     content_html = ""
     is_csv = False
     csv_headers = []
     csv_rows = []
 
-    if suffix == ".csv":
+    if is_image:
+        # Rendered via template with <img> tag pointing to /documents/file
+        pass
+    elif is_svg:
+        # Render SVG inline so it displays visually
+        content_html = f'<div class="flex justify-center p-4 bg-gray-50 rounded-lg border border-gray-200">{raw}</div>'
+    elif suffix == ".csv":
         is_csv = True
         csv_headers, csv_rows = parse_csv_to_rows(raw)
     elif suffix == ".html":
@@ -2728,7 +2981,27 @@ async def document_view(request: Request, group: str, path: str):
         _, body = parse_frontmatter(raw)
         content_html = render_md(body)
     else:
-        content_html = f"<pre class='whitespace-pre-wrap text-sm'>{raw}</pre>"
+        from markupsafe import escape
+        content_html = f"<pre class='whitespace-pre-wrap text-sm'>{escape(raw)}</pre>"
+
+    # Check if this file is a scheduled prompt
+    schedule_slug = ""
+    prompts_dir = g["shared"] / "prompts"
+    try:
+        if fpath.parent.resolve() == prompts_dir.resolve() and fpath.suffix == ".md" and not fpath.name.startswith("_"):
+            group_cfg = GROUPS.get(g["key"], {})
+            dispatch_cfg = group_cfg.get("dispatch", {})
+            stem = fpath.name.removesuffix(".md")
+            for agent_rules in dispatch_cfg.get("agents", {}).values():
+                if isinstance(agent_rules, list):
+                    for rule in agent_rules:
+                        if rule.get("prompt") == fpath.name:
+                            schedule_slug = stem
+                            break
+                if schedule_slug:
+                    break
+    except (ValueError, OSError):
+        pass
 
     return templates.TemplateResponse("document_view.html", {
         "request": request,
@@ -2742,6 +3015,10 @@ async def document_view(request: Request, group: str, path: str):
         "csv_rows": csv_rows,
         "suffix": suffix,
         "is_editable": suffix in (".md", ".csv"),
+        "is_image": is_image,
+        "is_svg": is_svg,
+        "image_url": f"/{group}/documents/file?path={path}" if is_image else "",
+        "schedule_slug": schedule_slug,
     })
 
 
@@ -2916,6 +3193,171 @@ async def prompts_dispatch_save(request: Request, group: str):
     save_config(config)
     reload_groups()
     return RedirectResponse(f"/{group}/prompts", status_code=303)
+
+
+@app.get("/{group}/schedule", response_class=HTMLResponse)
+async def schedule_list(request: Request, group: str):
+    """Task-oriented view of dispatch schedule."""
+    g = get_group(group)
+    group_cfg = GROUPS.get(g["key"], {})
+    dispatch_cfg = group_cfg.get("dispatch", {})
+    cards = build_schedule_cards(g, dispatch_cfg)
+    return templates.TemplateResponse("schedule.html", {
+        "request": request,
+        **group_context(g),
+        "active": "schedule",
+        "cards": cards,
+        "dispatch_enabled": dispatch_cfg.get("enabled", False),
+    })
+
+
+@app.get("/{group}/schedule/{slug}", response_class=HTMLResponse)
+async def schedule_detail(request: Request, group: str, slug: str):
+    """Task detail view — schedule, prompt content, run history."""
+    g = get_group(group)
+    group_cfg = GROUPS.get(g["key"], {})
+    dispatch_cfg = group_cfg.get("dispatch", {})
+
+    prompt_file = f"{slug}.md"
+    prompt_path = g["shared"] / "prompts" / prompt_file
+    if not prompt_path.exists():
+        raise HTTPException(404, "Prompt not found")
+
+    meta, body = parse_prompt_frontmatter(prompt_path)
+    content_html = render_md(body)
+
+    # Build assignments for this prompt from dispatch config
+    assignments = []
+    for agent_name, rules in dispatch_cfg.get("agents", {}).items():
+        if not isinstance(rules, list):
+            continue
+        for rule in rules:
+            if rule.get("prompt") == prompt_file:
+                assignments.append({
+                    "agent": agent_name,
+                    "at": rule.get("at"),
+                    "every": rule.get("every"),
+                    "condition": rule.get("condition"),
+                })
+
+    runs = collect_task_runs(g, slug, limit=20)
+    triggered = request.query_params.get("triggered", "")
+
+    return templates.TemplateResponse("schedule_detail.html", {
+        "request": request,
+        **group_context(g),
+        "active": "schedule",
+        "slug": slug,
+        "name": humanize_prompt_name(prompt_file),
+        "filename": prompt_file,
+        "description": meta.get("description", ""),
+        "expected_output": meta.get("expected_output", ""),
+        "body_raw": body,
+        "content_html": content_html,
+        "filepath": str(prompt_path),
+        "assignments": assignments,
+        "runs": runs,
+        "dispatch_enabled": dispatch_cfg.get("enabled", False),
+        "triggered": triggered,
+    })
+
+
+@app.post("/{group}/schedule/{slug}/run", response_class=HTMLResponse)
+async def schedule_run_now(request: Request, group: str, slug: str, background_tasks: BackgroundTasks):
+    """Trigger an immediate run of a scheduled task for a specific agent."""
+    from agency.dispatch.run import _run_agent
+
+    g = get_group(group)
+    group_cfg = GROUPS.get(g["key"], {})
+    dispatch_cfg = group_cfg.get("dispatch", {})
+
+    # Parse and validate agent field
+    form = await request.form()
+    agent_name = form.get("agent", "").strip()
+    if not agent_name:
+        raise HTTPException(400, "Missing agent field")
+
+    # Validate agent is assigned to this prompt in dispatch config
+    prompt_file = f"{slug}.md"
+    dispatch_agents = dispatch_cfg.get("agents", {})
+    agent_rules = dispatch_agents.get(agent_name)
+    if agent_rules is None:
+        raise HTTPException(400, f"Agent '{agent_name}' has no dispatch rules")
+
+    # Handle both list of rules and dict (with timeout key)
+    rules_list = agent_rules if isinstance(agent_rules, list) else agent_rules.get("rules", [])
+    assigned = any(r.get("prompt") == prompt_file for r in rules_list if isinstance(r, dict))
+    if not assigned:
+        raise HTTPException(400, f"Agent '{agent_name}' is not assigned to prompt '{prompt_file}'")
+
+    # Verify prompt file exists
+    prompt_path = g["shared"] / "prompts" / prompt_file
+    if not prompt_path.exists():
+        raise HTTPException(404, "Prompt not found")
+
+    # Resolve agent config from normalized agents list
+    agents_normalized = g.get("agents_full", g.get("_agents_normalized", []))
+    agents_by_name = {a["name"]: a for a in agents_normalized}
+    agent_config = agents_by_name.get(agent_name, {"name": agent_name, "integration": g.get("default_integration", "claude-code")})
+
+    # Resolve timeout: per-agent → group dispatch → default 1800
+    group_timeout = dispatch_cfg.get("timeout", 1800)
+    if isinstance(agent_rules, dict):
+        timeout = agent_rules.get("timeout", group_timeout)
+    else:
+        timeout = group_timeout
+
+    # Create log directory for today
+    log_dir = g["shared"] / "logs" / datetime.now().strftime("%Y-%m-%d")
+    log_dir.mkdir(parents=True, exist_ok=True)
+
+    # Resolve agent directory
+    agent_dir = get_agent_dir(g, agent_name)
+
+    # Dispatch as background task
+    background_tasks.add_task(
+        _run_agent,
+        Path(g["path"]), agent_name, prompt_file, timeout, log_dir,
+        agent_config, agent_dir=agent_dir,
+    )
+
+    return RedirectResponse(f"/{group}/schedule/{slug}?triggered={agent_name}", status_code=303)
+
+
+@app.post("/{group}/schedule/{slug}/save", response_class=HTMLResponse)
+async def schedule_save_meta(request: Request, group: str, slug: str):
+    """Save task description and expected_output to prompt frontmatter."""
+    g = get_group(group)
+    prompt_file = f"{slug}.md"
+    prompt_path = g["shared"] / "prompts" / prompt_file
+    if not prompt_path.exists():
+        raise HTTPException(404, "Prompt not found")
+
+    validate_file_access(prompt_path, g["path"], allowed_roots=get_allowed_roots(g))
+
+    form = await request.form()
+    new_description = form.get("description", "").strip()
+    new_expected = form.get("expected_output", "").strip()
+
+    meta, body = parse_prompt_frontmatter(prompt_path)
+    if new_description:
+        meta["description"] = new_description
+    elif "description" in meta:
+        del meta["description"]
+    if new_expected:
+        meta["expected_output"] = new_expected
+    elif "expected_output" in meta:
+        del meta["expected_output"]
+
+    # Rebuild file
+    if meta:
+        front = yaml.dump(meta, default_flow_style=False).strip()
+        content = f"---\n{front}\n---\n\n{body}\n"
+    else:
+        content = f"{body}\n"
+
+    prompt_path.write_text(content)
+    return RedirectResponse(f"/{group}/schedule/{slug}", status_code=303)
 
 
 @app.get("/{group}/memory", response_class=HTMLResponse)

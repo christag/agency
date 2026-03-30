@@ -8,6 +8,13 @@
   <a href="/{{ group }}/documents" class="text-sm text-indigo-600 hover:text-indigo-800">&larr; Back to documents</a>
 </div>
 
+{% if schedule_slug %}
+<div class="mb-4 px-4 py-3 rounded-lg bg-indigo-50 border border-indigo-200 text-sm text-indigo-800 flex items-center justify-between">
+  <span>This file is a scheduled task.</span>
+  <a href="/{{ group }}/schedule/{{ schedule_slug }}" class="font-medium text-indigo-600 hover:underline">View as task →</a>
+</div>
+{% endif %}
+
 <div class="bg-white rounded-lg border border-gray-200 p-4 md:p-6">
   <div class="mb-4 pb-4 border-b border-gray-100">
     <div class="flex flex-wrap items-center justify-between gap-2">
@@ -21,7 +28,15 @@
     <div class="text-xs text-gray-400 font-mono mt-1 break-all">{{ filepath }}</div>
   </div>
 
-  {% if is_csv %}
+  {% if is_image %}
+  <div class="flex justify-center p-4 bg-gray-50 rounded-lg border border-gray-200">
+    <img src="{{ image_url }}" alt="{{ filename }}" class="max-w-full max-h-[600px] object-contain rounded">
+  </div>
+  {% elif is_svg %}
+  <div id="rendered">
+    {{ content_html | safe }}
+  </div>
+  {% elif is_csv %}
   <div class="overflow-x-auto -mx-4 px-4">
     <table class="w-full text-sm">
       <thead>
@@ -46,7 +61,7 @@
   <iframe srcdoc="{{ raw | e }}" class="w-full border-0" style="min-height: 600px;" onload="this.style.height = this.contentWindow.document.body.scrollHeight + 40 + 'px'"></iframe>
   {% else %}
   <div id="rendered" class="prose max-w-none">
-    {{ content_html }}
+    {{ content_html | safe }}
   </div>
   {% endif %}
 
