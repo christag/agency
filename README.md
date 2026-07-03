@@ -11,7 +11,7 @@
 <p align="center">
   <a href="https://github.com/christag/agency/blob/master/LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0-blue.svg" alt="AGPL-3.0 License"></a>
   <img src="https://img.shields.io/badge/python-3.11+-blue.svg" alt="Python 3.11+">
-  <img src="https://img.shields.io/badge/tests-98%20passing-brightgreen.svg" alt="98 tests passing">
+  <img src="https://img.shields.io/badge/tests-289%20passing-brightgreen.svg" alt="289 tests passing">
   <img src="https://img.shields.io/badge/database-none-orange.svg" alt="No database">
   <img src="https://img.shields.io/badge/docker-not%20required-orange.svg" alt="No Docker required">
 </p>

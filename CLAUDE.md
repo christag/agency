@@ -75,7 +75,7 @@
 │       ├── setup_complete.html # Post-setup "touch grass" finale page
 │       ├── workspaces.html        # Workspace list — runtime frontend configs
 │       └── workspace_detail.html  # Workspace config file viewer/editor
-├── tests/                     # Test suite (98 tests)
+├── tests/                     # Test suite (289 tests)
 │   ├── conftest.py            # Shared fixtures
 │   ├── test_integrations.py   # Registry, detection, base classes
 │   ├── test_integration_claude_code.py
@@ -88,11 +88,13 @@
 │   ├── test_display_titles.py       # Display title extraction
 │   ├── test_needs_action.py         # Needs action metric
 │   ├── test_dashboard.py            # Dashboard helpers (pipeline stats, activity feed)
+│   ├── test_routes_smoke.py         # Every template route renders + security headers
 │   └── test_cli.py                  # CLI interface
 ├── kb/                        # User-facing documentation
 ├── docs/                      # Specs and plans
 ├── config.yaml                # Group registry + Agency settings
 ├── pyproject.toml             # Dependencies
+├── requirements.lock          # Pinned runtime closure for reproducible installs
 ├── .venv/                     # Python virtual environment
 └── CLAUDE.md                  # This file
 ```
@@ -510,10 +512,15 @@ agency decide <slug>  # Submit answers for a proposal
 ### Dependencies
 
 ```
-fastapi<0.116, starlette<1.0, uvicorn[standard], jinja2, markdown, pyyaml, markupsafe, python-multipart
+fastapi>=0.139,<1.0, starlette>=1.3.1,<2, uvicorn[standard]>=0.49,<1.0, jinja2>=3.1.6,<4,
+markdown>=3.10,<4, pyyaml>=6.0.2,<7, markupsafe>=3.0,<4, python-multipart>=0.0.20,<0.1, nh3>=0.3,<1.0
 ```
 
-Install: `.venv/bin/pip install -e .` from pyproject.toml.
+Lower bounds are security floors, upper bounds keep the resolver on a tested line. `nh3` sanitizes
+rendered markdown (`render_md`) against stored XSS.
+
+Install: `.venv/bin/pip install -e .` from pyproject.toml. For a reproducible pinned install, use
+`.venv/bin/pip install -r requirements.lock` (runtime closure only — regenerate after editing deps).
 
 ### Running Tests
 
