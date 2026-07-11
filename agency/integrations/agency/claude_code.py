@@ -74,6 +74,12 @@ class ClaudeCodeIntegration(BaseIntegration):
                 [cmd, "--dangerously-skip-permissions", "-p", prompt_text],
                 capture_output=True, text=True, timeout=timeout,
                 cwd=str(agent_dir),
+                # The prompt is passed via -p, never stdin. Without this, a
+                # background/service invocation inherits an open stdin pipe and the
+                # claude CLI blocks ~3s waiting for input, then writes a spurious
+                # "no stdin data received in 3s" warning to stderr — which surfaces
+                # as a red ERR entry on the logs page for an otherwise-clean run.
+                stdin=subprocess.DEVNULL,
             )
             duration = time.monotonic() - start
             return RunResult(
@@ -94,6 +100,7 @@ class ClaudeCodeIntegration(BaseIntegration):
             result = subprocess.run(
                 [cmd, "-p", text],
                 capture_output=True, text=True, timeout=timeout,
+                stdin=subprocess.DEVNULL,  # prompt is via -p; avoid the CLI's 3s stdin wait + warning
             )
             if result.returncode != 0:
                 raise IntegrationError(f"claude exited with code {result.returncode}: {result.stderr}")
