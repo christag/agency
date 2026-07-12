@@ -150,7 +150,14 @@ grep -qxF 'agents/' .gitignore 2>/dev/null || echo 'agents/' >> .gitignore
 
 ### 4.7 Agency Registration
 
-Check if Agency config exists at `~/dev/agency/config.yaml`.
+Check for an Agency `config.yaml` in common locations, in order: the current
+working directory, `~/dev/agency`, `~/agency`, and `~/.agency`. Use the first
+one found.
+
+If none of these exist, ask: "Where is your Agency install? (path to the
+directory containing config.yaml, or leave blank to skip)". If the user
+provides a path and it contains a valid `config.yaml`, use it; if left blank,
+skip silently.
 
 If found, ask: "Register this agent group with Agency dashboard? (Y/n)"
 
@@ -177,8 +184,6 @@ If yes:
   - If an assignment has a code condition (e.g., only runs when a DB check passes), add
     `condition: condition-name` to the rule — these display as read-only in the UI
   - This keeps config.yaml in sync with dispatch.sh so the Agency dashboard shows accurate schedules
-
-If not found, skip silently.
 
 ### 4.8 Systemd Timer Setup
 
