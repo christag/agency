@@ -369,7 +369,7 @@ def main():
     # serve
     p = sub.add_parser("serve", help="Start the web dashboard")
     p.add_argument("--port", type=int, default=8500)
-    p.add_argument("--host", default="0.0.0.0")
+    p.add_argument("--host", default="127.0.0.1", help="Bind address (default: loopback only; Agency has no auth)")
 
     # inbox
     p = sub.add_parser("inbox", help="What needs attention")

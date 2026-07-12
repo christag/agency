@@ -8,15 +8,29 @@ agency serve
 # or: python -m agency.app
 ```
 
-Agency serves on `http://localhost:8500` by default.
+Agency serves on `http://127.0.0.1:8500` by default.
+
+## Network exposure
+
+Agency binds to `127.0.0.1` (loopback) by default and ships **no authentication** — the admin
+surface can create agent groups, edit prompts, and dispatch LLM tools that execute code.
+
+To reach the dashboard from another machine, do **not** simply pass `--host 0.0.0.0`. That exposes
+an unauthenticated admin surface to your whole network. Instead, put Agency behind a reverse proxy
+(Traefik, nginx, Caddy) that terminates TLS and enforces authentication, and have the proxy forward
+to Agency on loopback. TLS/HSTS belong on that proxy, not on Agency.
 
 ## Dependencies
 
 ```
-fastapi<0.116, starlette<1.0, uvicorn[standard], jinja2, markdown, pyyaml, markupsafe, python-multipart
+fastapi>=0.139,<1.0, starlette>=1.3.1,<2, uvicorn[standard]>=0.49,<1.0, jinja2>=3.1.6,<4,
+markdown>=3.10,<4, pyyaml>=6.0.2,<7, markupsafe>=3.0,<4, python-multipart>=0.0.20,<0.1, nh3>=0.3,<1.0
 ```
 
 All defined in `pyproject.toml`. Install with `pip install -e .`.
+
+For a reproducible, pinned install use the lock file instead: `pip install -r requirements.lock`
+(runtime closure only; regenerate it after changing dependencies).
 
 ## Running as a systemd User Service (Linux)
 
