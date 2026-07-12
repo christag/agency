@@ -13,7 +13,10 @@
   <h2 class="text-sm font-semibold text-gray-500 uppercase tracking-wider mb-2">{{ date }}</h2>
   <div class="bg-white rounded-lg border border-gray-200 divide-y divide-gray-100">
     {% for e in entries %}
-    {% if e.suffix in [".out", ".err"] %}
+    {# An empty .err file means the run wrote nothing to stderr — i.e. a clean run.
+       Only surface .err entries that actually have content, so empty stderr logs
+       don't masquerade as errors with a red ERR badge. #}
+    {% if e.suffix == ".out" or (e.suffix == ".err" and e.size > 0) %}
     <a href="/{{ group }}/logs/view?path={{ e.path }}" class="block px-4 py-2.5 hover:bg-gray-50 transition-colors">
       <div class="flex items-center justify-between">
         <div class="flex items-center gap-3">
